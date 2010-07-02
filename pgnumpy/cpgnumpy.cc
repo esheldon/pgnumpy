@@ -1,5 +1,22 @@
 #include "cpgnumpy.h"
 
+#include <setjmp.h>
+#include <signal.h>
+
+/* Interrupt handler */
+
+static jmp_buf jbuf;
+
+/* ARGSUSED */
+static void
+onintr(int sig)
+{
+	longjmp(jbuf, 1);
+}
+
+
+
+
 //Constructor and destructor
 cPgNumpy::cPgNumpy() throw (const char*)
 {
@@ -74,6 +91,31 @@ void cPgNumpy::execute(string query_string) throw (const char*)
 
 void cPgNumpy::execute(const char* query_string) throw (const char*)
 {
+
+	PyOS_sighandler_t old_inthandler;
+	old_inthandler = PyOS_setsig(SIGINT, onintr);
+
+	if (setjmp(jbuf)) {
+#ifdef HAVE_SIGRELSE
+		/* This seems necessary on SunOS 4.1 (Rasmus Hahn) */
+		sigrelse(SIGINT);
+#endif
+
+        clear();
+
+        cout<<"\nInterrupt encountered. Canceling query...";
+		PyOS_setsig(SIGINT, old_inthandler);
+        if (!PQrequestCancel(mConn)) {
+            stringstream err;
+            err<<"Failed to cancel: "<<PQerrorMessage(mConn)<<"\n";
+            _print_flush(err.str().c_str());
+        } else {
+            _print_flush("OK\n");
+        }
+        return;
+    }
+
+
     // first clear any existing results
     clear();
     if (debug) {
@@ -88,6 +130,9 @@ void cPgNumpy::execute(const char* query_string) throw (const char*)
             NULL,
             NULL,
             mBinary); /* 0 for text, 1 for binary (network order) */
+
+    // If we get here we are good
+	PyOS_setsig(SIGINT, old_inthandler);
 
     // sets mResultStatus, mNtuples, mNfields
     // also can set error strings
